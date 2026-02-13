@@ -2,6 +2,7 @@ import pino from "pino";
 import { loadConfig } from "./config.js";
 import { loadWorkspace, parseIdentity } from "./workspace/loader.js";
 import { createServer } from "./server.js";
+import { loadNatsConfig, startNatsSubscriber } from "./nats.js";
 
 async function main() {
   const config = loadConfig();
@@ -13,7 +14,7 @@ async function main() {
         : undefined,
   });
 
-  logger.info({ workspace: config.workspaceDir, model: config.model }, "Knight Light starting");
+  logger.info({ workspace: config.workspaceDir, model: config.model }, "Knight Agent starting");
 
   // Load workspace files
   const workspace = await loadWorkspace(config);
@@ -34,14 +35,42 @@ async function main() {
     "Workspace loaded",
   );
 
-  // Start server
+  // Start HTTP server (health checks + optional webhook fallback)
   const app = createServer(config, workspace, logger);
   app.listen(config.port, () => {
     logger.info(
-      { port: config.port, knight: knightName, emoji: identity.emoji },
-      `${identity.emoji} ${knightName} ready for tasks`,
+      { port: config.port, knight: knightName },
+      `HTTP server ready (health checks)`,
     );
   });
+
+  // Start NATS subscriber if configured
+  const natsConfig = loadNatsConfig();
+  if (natsConfig.subscribeTopics.length > 0) {
+    try {
+      const nc = await startNatsSubscriber(natsConfig, config, workspace, logger);
+      logger.info(
+        { knight: knightName, emoji: identity.emoji, topics: natsConfig.subscribeTopics },
+        `${identity.emoji} ${knightName} listening on NATS`,
+      );
+
+      // Graceful shutdown
+      const shutdown = async () => {
+        logger.info("Shutting down...");
+        await nc.drain();
+        process.exit(0);
+      };
+      process.on("SIGTERM", shutdown);
+      process.on("SIGINT", shutdown);
+    } catch (error) {
+      logger.error(
+        { error: error instanceof Error ? error.message : String(error) },
+        "Failed to connect to NATS — running in HTTP-only mode",
+      );
+    }
+  } else {
+    logger.info("No NATS topics configured — running in HTTP webhook mode only");
+  }
 }
 
 main().catch((error) => {

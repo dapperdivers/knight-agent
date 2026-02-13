@@ -9,22 +9,26 @@ Skills follow the open [Agent Skills](https://agentskills.io) standard — the s
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Knight Pod                       │
-│                                                   │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ knight-light │  │ nats-    │  │ git-sync   │  │
-│  │ (Express +   │  │ bridge   │  │ (skills)   │  │
-│  │  Agent SDK)  │  │          │  │            │  │
-│  └──────┬───────┘  └────┬─────┘  └────────────┘  │
-│         │               │                         │
-│         │  HTTP webhook  │                         │
-│         ◄───────────────┘                         │
-└─────────┼───────────────┼─────────────────────────┘
-          │               │
-          │ Anthropic API  │ NATS JetStream
-          ▼               ▼
+┌──────────────────────────────────────────┐
+│              Knight Pod                    │
+│                                            │
+│  ┌──────────────────┐   ┌────────────┐   │
+│  │   knight-agent    │   │  git-sync  │   │
+│  │  (Express + SDK   │   │  (skills)  │   │
+│  │   + native NATS)  │   │            │   │
+│  └────────┬──────────┘   └────────────┘   │
+│           │                                │
+└───────────┼────────────────────────────────┘
+            │
+     ┌──────┴──────┐
+     │              │
+     ▼              ▼
+  Anthropic     NATS JetStream
+    API         (subscribe + publish)
 ```
+
+No sidecar needed — NATS client is built into the runtime via `nats.js`.
+The HTTP server remains for health checks (`/healthz`, `/readyz`, `/info`) and as a webhook fallback.
 
 ## Design Principles
 
@@ -124,6 +128,11 @@ Returns knight identity and status.
 | `MAX_TOKENS` | No | `16384` | Max output tokens |
 | `KNIGHT_NAME` | No | Read from IDENTITY.md | Knight name override |
 | `LOG_LEVEL` | No | `info` | Logging level |
+| `NATS_URL` | No | `nats://nats.database.svc:4222` | NATS server URL |
+| `FLEET_ID` | No | `fleet-a` | Fleet ID for topic prefix |
+| `AGENT_ID` | No | `knight` | Agent/knight identifier |
+| `SUBSCRIBE_TOPICS` | No | — | Comma-separated NATS topics to subscribe to |
+| `NATS_DURABLE_NAME` | No | `{agentId}-consumer` | JetStream durable consumer name |
 
 ## License
 

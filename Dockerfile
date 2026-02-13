@@ -21,13 +21,14 @@ RUN npm prune --production
 # ---- Runtime stage ----
 FROM node:22-slim
 
-# Install Claude Agent SDK CLI dependency (bundled with the SDK)
-# The SDK needs the claude binary available
+# Minimal runtime deps — SDK bundles its own CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# No nats-bridge sidecar needed — NATS client is native
 
 # Create non-root user
 RUN groupadd -r knight && useradd -r -g knight -m -d /home/knight knight
