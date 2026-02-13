@@ -1,8 +1,10 @@
-# Knight Light
+# Knight Agent
 
 Lightweight AI agent runtime for Knights of the Round Table.
 
 Replaces full OpenClaw gateway pods (~1.5-2GB) with a thin Express server wrapping the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-js), achieving ~75% resource reduction while maintaining the same agent capabilities.
+
+Skills follow the open [Agent Skills](https://agentskills.io) standard — the same format used by Claude Code, Augment, and other compatible agents.
 
 ## Architecture
 
@@ -51,15 +53,25 @@ Knights are configured via workspace files mounted into the container:
 
 ```
 /workspace/
-├── SOUL.md          # Personality, tone, boundaries
-├── AGENTS.md        # Operating instructions
-├── TOOLS.md         # Tool notes, API endpoints
-├── IDENTITY.md      # Name, emoji, vibe
-├── memory/          # Daily logs + long-term memory
+├── SOUL.md              # Personality, tone, boundaries
+├── AGENTS.md            # Operating instructions
+├── TOOLS.md             # Tool notes, API endpoints
+├── IDENTITY.md          # Name, emoji, vibe
+├── memory/              # Daily logs + long-term memory
 │   ├── MEMORY.md
 │   └── YYYY-MM-DD.md
-└── skills/          # Git-synced from arsenal
+└── skills/              # Agent Skills (agentskills.io standard)
+    ├── opencti-intel/
+    │   ├── SKILL.md     # Frontmatter + instructions
+    │   └── scripts/     # Executable helpers
+    ├── nats-comms/
+    │   └── SKILL.md
+    └── cve-deep-dive/
+        ├── SKILL.md
+        └── references/  # On-demand reference docs
 ```
+
+Skills are discovered automatically at startup via the [Agent Skills](https://agentskills.io) spec. Only name + description (~100 tokens each) are loaded initially; full instructions load on-demand when the agent activates a skill (progressive disclosure).
 
 ## Quick Start
 

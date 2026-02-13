@@ -1,4 +1,6 @@
 import type { WorkspaceFiles, KnightIdentity } from "../workspace/loader.js";
+import type { SkillMeta } from "../workspace/skills.js";
+import { buildSkillCatalog } from "../workspace/skills.js";
 
 /**
  * Layered prompt architecture for knight agents.
@@ -15,7 +17,13 @@ import type { WorkspaceFiles, KnightIdentity } from "../workspace/loader.js";
  * Short, immutable, contract-style. This is the knight's core identity
  * and non-negotiable constraints. Should be <500 tokens.
  */
-export function buildSystemPrompt(identity: KnightIdentity, domain: string): string {
+export function buildSystemPrompt(
+  identity: KnightIdentity,
+  domain: string,
+  skills: SkillMeta[] = [],
+): string {
+  const skillCatalog = buildSkillCatalog(skills);
+
   return `You are ${identity.name} ${identity.emoji}, a specialized AI agent in the Knights of the Round Table.
 
 <role>${identity.description}</role>
@@ -35,7 +43,8 @@ When returning results, use structured formats:
 - For data: provide structured JSON when possible
 - For reports: use clear sections with headers
 Always include confidence level (high/medium/low) for analytical claims.
-</output_contract>`;
+</output_contract>
+${skillCatalog ? "\n" + skillCatalog : ""}`;
 }
 
 /**

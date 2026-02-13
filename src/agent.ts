@@ -1,4 +1,5 @@
 import { query, type ClaudeAgentOptions } from "@anthropic-ai/claude-agent-sdk";
+import { join } from "path";
 import type { KnightConfig } from "./config.js";
 import type { WorkspaceFiles } from "./workspace/loader.js";
 import { parseIdentity } from "./workspace/loader.js";
@@ -8,6 +9,7 @@ import {
   buildSkillContext,
   buildTaskMessage,
 } from "./prompt/layers.js";
+import { discoverSkills, loadSkill } from "./workspace/skills.js";
 import {
   executeNatsRespond,
   executeWebSearch,
@@ -53,10 +55,24 @@ export async function executeTask(
   const knightName = config.knightName ?? identity.name;
   const domain = task.metadata?.domain ?? "general";
 
-  // Layer 1: System prompt
+  // Discover available skills (progressive disclosure — metadata only)
+  const skills = await discoverSkills(join(config.workspaceDir, "skills"));
+
+  // If task specifies a skill, load it fully
+  let skillContent: string | null = task.metadata?.skillContent ?? null;
+  if (!skillContent && task.metadata?.skill) {
+    const matchedSkill = skills.find((s) => s.name === task.metadata!.skill);
+    if (matchedSkill) {
+      const full = await loadSkill(matchedSkill.path);
+      skillContent = full?.instructions ?? null;
+    }
+  }
+
+  // Layer 1: System prompt (with skill catalog for discovery)
   const systemPrompt = buildSystemPrompt(
     { ...identity, name: knightName },
     domain,
+    skills,
   );
 
   // Layer 2: Context messages (prefilled conversation)
@@ -65,9 +81,9 @@ export async function executeTask(
     name: knightName,
   });
 
-  // Layer 3: Skill injection (optional)
+  // Layer 3: Skill injection (optional, loaded on-demand)
   const skillMsg = buildSkillContext(
-    task.metadata?.skillContent ?? null,
+    skillContent,
     task.metadata?.skill ?? "none",
   );
 
