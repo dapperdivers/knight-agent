@@ -1,0 +1,229 @@
+# Example: Deploy "Percival" — an infrastructure monitoring knight
+# Copy this, change the names and SOUL.md, deploy.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: percival-workspace
+  namespace: roundtable
+data:
+  SOUL.md: |
+    # SOUL.md — Percival
+
+    *The gears must turn.*
+
+    ## Who I Am
+    I am Percival, an infrastructure guardian of the Round Table.
+    I monitor the homelab — Kubernetes clusters, GitHub repos, and services.
+
+    ## My Domain
+    - Cluster health monitoring
+    - GitHub PR and issue tracking
+    - Service availability checks
+    - Resource usage analysis
+
+    ## How I Work
+    - Check, assess, report. I don't fix — I surface what needs attention.
+    - Severity: CRITICAL → HIGH → MEDIUM → INFO
+    - Infrastructure relevant to our stack gets elevated.
+    - Output via NATS to the orchestrator.
+
+    ## Personality
+    Methodical. Dutiful. Quietly proud of a clean health report.
+
+  AGENTS.md: |
+    # AGENTS.md — Percival
+
+    ## Every Task
+    1. Read the task from NATS
+    2. Check available skills for relevant capabilities
+    3. Execute the task using tools and scripts
+    4. Return structured results via NATS
+
+    ## Memory
+    - Write significant findings to memory/ for continuity
+    - Read recent memory at task start for context
+
+    ## Constraints
+    - READ ONLY. Do not modify infrastructure.
+    - Report findings. Tim or the user decides actions.
+    - Keep responses structured and actionable.
+
+  IDENTITY.md: |
+    - **Name:** Percival
+    - **Emoji:** ⚙️
+    - **Creature:** Infrastructure guardian knight
+
+  TOOLS.md: |
+    # TOOLS.md — Percival
+
+    ## Cluster Access
+    - kubectl available for read-only queries
+    - Target: dapper-cluster (Talos, Flux, Cilium)
+
+    ## GitHub
+    - gh CLI for repo queries
+    - Repos: dapperdivers/*
+
+    ## SearXNG
+    - `http://searxng.selfhosted.svc.cluster.local:8080/search?q=QUERY&format=json`
+---
+# Optional: PVC for memory persistence
+# Omit this for stateless knights that don't need memory between tasks
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: percival-data
+  namespace: roundtable
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: ceph-block
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: percival
+  namespace: roundtable
+  labels:
+    app.kubernetes.io/name: percival
+    app.kubernetes.io/component: knight
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: percival
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: percival
+        app.kubernetes.io/component: knight
+    spec:
+      # Init: seed PVC from ConfigMap (only if files don't exist)
+      initContainers:
+        - name: seed-workspace
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              # Seed from ConfigMap to PVC (only if missing)
+              for f in SOUL.md AGENTS.md IDENTITY.md TOOLS.md; do
+                if [ ! -f /data/$f ]; then
+                  cp /config/$f /data/$f
+                  echo "Seeded $f"
+                fi
+              done
+              mkdir -p /data/memory
+              echo "Workspace ready"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+
+      containers:
+        # Knight Agent
+        - name: agent
+          image: ghcr.io/dapperdivers/knight-agent:latest
+          env:
+            - name: WORKSPACE_DIR
+              value: /workspace
+            - name: MODEL
+              value: claude-sonnet-4-5-20250514
+            - name: NATS_URL
+              value: nats://nats.database.svc:4222
+            - name: FLEET_ID
+              value: fleet-a
+            - name: AGENT_ID
+              value: percival
+            - name: SUBSCRIBE_TOPICS
+              value: fleet-a.tasks.infra.>
+            - name: KNIGHT_NAME
+              value: Percival
+            - name: LOG_LEVEL
+              value: info
+          envFrom:
+            - secretRef:
+                name: galahad-secret  # Reuse existing secret with ANTHROPIC_API_KEY
+          ports:
+            - containerPort: 18789
+              name: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /workspace
+            - name: skills
+              mountPath: /workspace/skills
+              readOnly: true
+
+        # Git-sync for skills
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.4.1
+          env:
+            - name: GITSYNC_REPO
+              value: https://github.com/dapperdivers/roundtable-arsenal
+            - name: GITSYNC_ROOT
+              value: /skills
+            - name: GITSYNC_PERIOD
+              value: "300s"  # Sync every 5 min
+            - name: GITSYNC_LINK
+              value: current
+            # Sync shared + infra tiers
+            - name: GITSYNC_SPARSE_CHECKOUT_FILE
+              value: /etc/git-sync/sparse-checkout
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+            - name: sparse-checkout
+              mountPath: /etc/git-sync
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      volumes:
+        - name: config
+          configMap:
+            name: percival-workspace
+        - name: data
+          persistentVolumeClaim:
+            claimName: percival-data
+        - name: skills
+          emptyDir: {}
+        - name: sparse-checkout
+          configMap:
+            name: percival-sparse-checkout
+---
+# Sparse checkout config — controls which skill tiers this knight gets
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: percival-sparse-checkout
+  namespace: roundtable
+data:
+  sparse-checkout: |
+    /shared/
+    /intel/

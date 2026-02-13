@@ -33,6 +33,20 @@ async function readOptionalFile(path: string): Promise<string | null> {
 }
 
 /**
+ * Read a file with overlay: check primary path first, fall back to secondary.
+ * Used for PVC (mutable) → ConfigMap (immutable) overlay pattern.
+ */
+async function readWithFallback(
+  primaryPath: string,
+  fallbackPath: string | null,
+): Promise<string | null> {
+  const primary = await readOptionalFile(primaryPath);
+  if (primary !== null) return primary;
+  if (fallbackPath) return readOptionalFile(fallbackPath);
+  return null;
+}
+
+/**
  * Load recent daily memory files (today + yesterday).
  */
 async function loadRecentMemory(workspaceDir: string): Promise<string[]> {
@@ -80,15 +94,22 @@ export function parseIdentity(content: string | null): KnightIdentity {
 
 /**
  * Load all workspace files for a knight.
+ *
+ * Supports overlay pattern:
+ *   /workspace/ (PVC, mutable) overlays /workspace/config/ (ConfigMap, immutable)
+ *
+ * For each file, checks workspace root first (PVC), falls back to config/ subdir.
+ * This lets knights modify their own TOOLS.md while SOUL.md stays immutable from ConfigMap.
  */
 export async function loadWorkspace(config: KnightConfig): Promise<WorkspaceFiles> {
   const dir = config.workspaceDir;
+  const configDir = join(dir, "config");
 
   const [soul, agents, tools, identity, memory] = await Promise.all([
-    readOptionalFile(join(dir, "SOUL.md")),
-    readOptionalFile(join(dir, "AGENTS.md")),
-    readOptionalFile(join(dir, "TOOLS.md")),
-    readOptionalFile(join(dir, "IDENTITY.md")),
+    readWithFallback(join(dir, "SOUL.md"), join(configDir, "SOUL.md")),
+    readWithFallback(join(dir, "AGENTS.md"), join(configDir, "AGENTS.md")),
+    readWithFallback(join(dir, "TOOLS.md"), join(configDir, "TOOLS.md")),
+    readWithFallback(join(dir, "IDENTITY.md"), join(configDir, "IDENTITY.md")),
     readOptionalFile(join(dir, "MEMORY.md")),
   ]);
 
