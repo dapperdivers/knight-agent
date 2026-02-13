@@ -1,0 +1,73 @@
+# Knight RBAC — scoped read-only access per knight
+# Each knight gets a ServiceAccount + Role limiting what they can see.
+#
+# Principle: knights can READ their relevant namespaces, nothing more.
+# No secrets, no exec, no write operations.
+---
+# ServiceAccount for the knight
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: percival
+  namespace: roundtable
+---
+# What Percival can read in the roundtable namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: percival-reader
+  namespace: roundtable
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  # NO secrets, NO exec, NO delete/patch/create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: percival-reader
+  namespace: roundtable
+subjects:
+  - kind: ServiceAccount
+    name: percival
+    namespace: roundtable
+roleRef:
+  kind: Role
+  name: percival-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cross-namespace read access (e.g., Percival monitoring database namespace)
+# Add additional RoleBindings per namespace as needed
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: percival-reader
+  namespace: database
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: percival-reader
+  namespace: database
+subjects:
+  - kind: ServiceAccount
+    name: percival
+    namespace: roundtable
+roleRef:
+  kind: Role
+  name: percival-reader
+  apiGroup: rbac.authorization.k8s.io

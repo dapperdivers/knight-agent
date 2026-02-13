@@ -7,7 +7,17 @@ To deploy a new knight, you need:
 2. A HelmRelease pointing at the knight-agent image
 3. A secret with `ANTHROPIC_API_KEY` (can reuse existing)
 
-That's it. No PVC required for day-one deployment — memory persistence is optional.
+That's it. PVC is recommended for memory persistence and tool installation.
+
+## RBAC
+
+Each knight gets a scoped ServiceAccount with read-only access:
+- **No secrets** — API keys injected via envFrom, never queryable
+- **No exec** — can't shell into other pods
+- **No write** — can't modify cluster state
+- **Per-namespace** — each knight only sees namespaces relevant to its domain
+
+See `rbac.yaml` for the template. Add RoleBindings per namespace as needed.
 
 ## File Overlay Strategy
 

@@ -122,6 +122,7 @@ spec:
         app.kubernetes.io/name: percival
         app.kubernetes.io/component: knight
     spec:
+      serviceAccountName: percival  # Scoped RBAC — see rbac.yaml
       # Init: seed PVC from ConfigMap (only if files don't exist)
       initContainers:
         - name: seed-workspace
