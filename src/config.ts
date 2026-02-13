@@ -1,5 +1,7 @@
+import { existsSync } from "fs";
+
 /**
- * Knight Light configuration — loaded from environment variables.
+ * Knight Agent configuration — loaded from environment variables.
  */
 export interface KnightConfig {
   /** Workspace directory containing SOUL.md, AGENTS.md, etc. */
@@ -22,10 +24,8 @@ export interface KnightConfig {
 
 export function loadConfig(): KnightConfig {
   const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-  const hasOAuth =
-    !!process.env.CLAUDE_AUTH_DIR ||
-    (process.env.HOME &&
-      require("fs").existsSync(`${process.env.HOME}/.claude/.credentials.json`));
+  const claudeAuthDir = process.env.CLAUDE_AUTH_DIR ?? `${process.env.HOME}/.claude`;
+  const hasOAuth = !!process.env.CLAUDE_AUTH_DIR || existsSync(`${claudeAuthDir}/.credentials.json`);
 
   return {
     workspaceDir: process.env.WORKSPACE_DIR ?? "/workspace",
@@ -35,7 +35,6 @@ export function loadConfig(): KnightConfig {
     knightName: process.env.KNIGHT_NAME,
     logLevel: process.env.LOG_LEVEL ?? "info",
     authMethod: hasApiKey ? "api-key" : "oauth",
-    claudeAuthDir:
-      process.env.CLAUDE_AUTH_DIR ?? `${process.env.HOME}/.claude`,
+    claudeAuthDir,
   };
 }

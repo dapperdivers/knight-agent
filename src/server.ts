@@ -1,8 +1,7 @@
 import express from "express";
 import type { KnightConfig } from "./config.js";
 import type { WorkspaceFiles } from "./workspace/loader.js";
-import { parseIdentity } from "./workspace/loader.js";
-import { loadWorkspace } from "./workspace/loader.js";
+import { parseIdentity, loadWorkspace } from "./workspace/loader.js";
 import { executeTask, type TaskRequest } from "./agent.js";
 import type { Logger } from "pino";
 
@@ -80,7 +79,6 @@ export function createServer(
    * GET /readyz — Readiness probe.
    */
   app.get("/readyz", (_req, res) => {
-    // Ready if not overloaded
     if (activeTasks > 3) {
       res.status(503).json({ status: "busy", activeTasks });
       return;

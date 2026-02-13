@@ -1,4 +1,4 @@
-import { query, type ClaudeAgentOptions } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { join } from "path";
 import type { KnightConfig } from "./config.js";
 import type { WorkspaceFiles } from "./workspace/loader.js";
@@ -10,14 +10,6 @@ import {
   buildTaskMessage,
 } from "./prompt/layers.js";
 import { discoverSkills, loadSkill } from "./workspace/skills.js";
-import {
-  executeNatsRespond,
-  executeWebSearch,
-  executeWebFetch,
-  type NatsRespondParams,
-  type WebSearchParams,
-  type WebFetchParams,
-} from "./tools/index.js";
 import type { Logger } from "pino";
 
 export interface TaskRequest {
@@ -90,43 +82,42 @@ export async function executeTask(
   // Layer 4: Task message
   const taskMessage = buildTaskMessage(task.message, task.metadata);
 
-  // Build the full prompt with prefilled context
-  const fullPrompt = [
-    ...contextMessages.map((m) => `[${m.role}]: ${m.content}`),
-    ...(skillMsg ? [`[user]: ${skillMsg.content}`] : []),
-    taskMessage,
-  ].join("\n\n---\n\n");
+  // Build the full prompt — context + skill + task as a single prompt string
+  // The SDK handles this as the user message; system prompt is separate
+  const promptParts: string[] = [];
+
+  // Inject context as structured blocks in the prompt
+  for (const msg of contextMessages) {
+    promptParts.push(msg.content);
+  }
+  if (skillMsg) {
+    promptParts.push(skillMsg.content);
+  }
+  promptParts.push(taskMessage);
+
+  const fullPrompt = promptParts.join("\n\n---\n\n");
 
   logger.info(
     {
       taskId: task.metadata?.taskId,
       domain,
       knightName,
-      promptLayers: {
-        system: systemPrompt.length,
-        context: contextMessages.length,
-        skill: !!skillMsg,
-        task: taskMessage.length,
-      },
+      skillsAvailable: skills.length,
+      skillActivated: task.metadata?.skill ?? null,
+      promptLength: fullPrompt.length,
     },
     "Executing task with layered prompt",
   );
 
-  const options: ClaudeAgentOptions = {
-    system_prompt: systemPrompt,
+  const options: Options = {
+    systemPrompt,
     model: config.model,
-    max_tokens: config.maxTokens,
     cwd: config.workspaceDir,
-    permission_mode: "acceptEdits",
-    allowed_tools: [
-      "Read",
-      "Write",
-      "Edit",
-      "Bash",
-      "nats_respond",
-      "web_search",
-      "web_fetch",
-    ],
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    maxTurns: 25,
+    persistSession: false,
+    tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
   };
 
   let output = "";
@@ -135,41 +126,23 @@ export async function executeTask(
   let totalOutputTokens = 0;
 
   try {
-    for await (const message of query({
-      prompt: fullPrompt,
-      options,
-      // Custom tool handler
-      toolHandler: async (toolName: string, toolInput: Record<string, unknown>) => {
-        switch (toolName) {
-          case "nats_respond":
-            return executeNatsRespond(toolInput as unknown as NatsRespondParams);
-          case "web_search":
-            return executeWebSearch(toolInput as unknown as WebSearchParams);
-          case "web_fetch":
-            return executeWebFetch(toolInput as unknown as WebFetchParams);
-          default:
-            throw new Error(`Unknown custom tool: ${toolName}`);
-        }
-      },
-    })) {
-      // Collect output from text blocks
-      if ("content" in message && Array.isArray(message.content)) {
-        for (const block of message.content) {
-          if ("type" in block && block.type === "text" && "text" in block) {
+    for await (const message of query({ prompt: fullPrompt, options })) {
+      if (message.type === "assistant") {
+        // Extract text from assistant message content blocks
+        for (const block of message.message.content) {
+          if (block.type === "text") {
             output += block.text;
           }
         }
       }
 
-      // Collect telemetry from result message
-      if ("subtype" in message) {
-        const result = message as Record<string, unknown>;
-        if (result.total_cost_usd) totalCost = result.total_cost_usd as number;
-        if (result.modelUsage) {
-          const usage = result.modelUsage as Record<string, { input_tokens?: number; output_tokens?: number }>;
-          for (const model of Object.values(usage)) {
-            totalInputTokens += model.input_tokens ?? 0;
-            totalOutputTokens += model.output_tokens ?? 0;
+      if (message.type === "result") {
+        if (message.subtype === "success") {
+          totalCost = message.total_cost_usd;
+          output = message.result || output;
+          for (const [, usage] of Object.entries(message.modelUsage)) {
+            totalInputTokens += usage.inputTokens ?? 0;
+            totalOutputTokens += usage.outputTokens ?? 0;
           }
         }
       }
