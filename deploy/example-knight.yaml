@@ -36,16 +36,37 @@ data:
 
     ## Every Task
     1. Read the task from NATS
-    2. Check available skills for relevant capabilities
+    2. Check available skills in /workspace/skills/ for relevant capabilities
     3. Execute the task using tools and scripts
     4. Return structured results via NATS
+    5. Write significant findings to memory/ for continuity
 
     ## Memory
-    - Write significant findings to memory/ for continuity
-    - Read recent memory at task start for context
+    - Write daily logs to `memory/YYYY-MM-DD.md`
+    - Read recent memory (today + yesterday) at task start for context
+    - Update `MEMORY.md` with long-term learnings periodically
+
+    ## Tools Available
+    Pre-installed: jq, yq, curl, wget, git, python3, kubectl, gh, nats, rg, tree
+    Skills provide additional scripts in /workspace/skills/
+
+    ## Installing New Tools
+    You can install tools that persist across restarts:
+    - **Python packages:** `pip install --user <package>` (persists in PVC)
+    - **Custom scripts:** Save to `~/.local/bin/` (on PATH, persists in PVC)
+    - **npm packages:** `npm install -g <package>` in your workspace
+
+    ## Writing Your Own Skills
+    You can create skills in your workspace at `/workspace/local-skills/`:
+    ```
+    local-skills/my-skill/
+    ├── SKILL.md          # Frontmatter + instructions
+    └── scripts/          # Your executable helpers
+    ```
+    Follow the agentskills.io spec. See /workspace/skills/shared/ for examples.
 
     ## Constraints
-    - READ ONLY. Do not modify infrastructure.
+    - READ ONLY for infrastructure. Do not modify cluster state.
     - Report findings. Tim or the user decides actions.
     - Keep responses structured and actionable.
 
@@ -164,11 +185,11 @@ spec:
             initialDelaySeconds: 5
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: "1"
+              memory: 1Gi
           volumeMounts:
             - name: data
               mountPath: /workspace

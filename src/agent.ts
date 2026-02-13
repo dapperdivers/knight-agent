@@ -47,8 +47,12 @@ export async function executeTask(
   const knightName = config.knightName ?? identity.name;
   const domain = task.metadata?.domain ?? "general";
 
-  // Discover available skills (progressive disclosure — metadata only)
-  const skills = await discoverSkills(join(config.workspaceDir, "skills"));
+  // Discover available skills from both git-synced and knight-authored locations
+  const [sharedSkills, localSkills] = await Promise.all([
+    discoverSkills(join(config.workspaceDir, "skills")),
+    discoverSkills(join(config.workspaceDir, "local-skills")),
+  ]);
+  const skills = [...sharedSkills, ...localSkills];
 
   // If task specifies a skill, load it fully
   let skillContent: string | null = task.metadata?.skillContent ?? null;

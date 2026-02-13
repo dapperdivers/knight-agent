@@ -1,37 +1,91 @@
-# knight-light — Lightweight AI agent runtime
-# Multi-stage build for minimal image size
+# knight-agent — Lightweight AI agent runtime
+# Multi-stage build for tool installation + minimal runtime
 
-# ---- Build stage ----
+# ---- Build stage (TypeScript compile) ----
 FROM node:22-slim AS build
 
 WORKDIR /app
 
-# Install dependencies
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
-# Copy source and build
 COPY tsconfig.json ./
 COPY src/ ./src/
 RUN npm run build
-
-# Prune dev dependencies
 RUN npm prune --production
+
+# ---- Tool installer (keeps runtime layer clean) ----
+FROM node:22-slim AS tools
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# kubectl (read-only cluster access)
+RUN curl -sLo /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
+# gh CLI (GitHub queries)
+RUN curl -sL https://github.com/cli/cli/releases/latest/download/gh_2.67.0_linux_amd64.tar.gz \
+    | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh
+
+# yq (YAML processor)
+RUN curl -sLo /usr/local/bin/yq \
+    "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+    && chmod +x /usr/local/bin/yq
+
+# ripgrep (used by SDK's Grep tool)
+RUN curl -sL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
+    | tar xz -C /tmp && mv /tmp/ripgrep-*/rg /usr/local/bin/rg
+
+# nats CLI (direct NATS queries from skills)
+RUN curl -sL https://github.com/nats-io/natscli/releases/download/v0.2.2/nats-0.2.2-linux-amd64.zip \
+    -o /tmp/nats.zip && apt-get update && apt-get install -y unzip && unzip /tmp/nats.zip -d /tmp/nats \
+    && mv /tmp/nats/nats-0.2.2-linux-amd64/nats /usr/local/bin/nats && chmod +x /usr/local/bin/nats
 
 # ---- Runtime stage ----
 FROM node:22-slim
 
-# Minimal runtime deps — SDK bundles its own CLI
+# System packages knights commonly need
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core utilities
     ca-certificates \
     curl \
+    wget \
     git \
+    jq \
+    # Text processing
+    sed \
+    gawk \
+    grep \
+    # Python (many skills use it)
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Network tools
+    dnsutils \
+    netcat-openbsd \
+    # Misc
+    unzip \
+    file \
+    less \
+    tree \
     && rm -rf /var/lib/apt/lists/*
 
-# No nats-bridge sidecar needed — NATS client is native
+# Copy pre-built tools from tool installer
+COPY --from=tools /usr/local/bin/kubectl /usr/local/bin/kubectl
+COPY --from=tools /usr/local/bin/gh /usr/local/bin/gh
+COPY --from=tools /usr/local/bin/yq /usr/local/bin/yq
+COPY --from=tools /usr/local/bin/rg /usr/local/bin/rg
+COPY --from=tools /usr/local/bin/nats /usr/local/bin/nats
 
-# Create non-root user
-RUN groupadd -r knight && useradd -r -g knight -m -d /home/knight knight
+# Create knight user
+RUN groupadd -r knight && useradd -r -g knight -m -d /home/knight -s /bin/bash knight
+
+# Knight's local bin — PVC-persistent, on PATH
+RUN mkdir -p /home/knight/.local/bin && chown -R knight:knight /home/knight
 
 WORKDIR /app
 
@@ -43,14 +97,17 @@ COPY --from=build /app/package.json ./
 # Create workspace mount point
 RUN mkdir -p /workspace && chown knight:knight /workspace
 
-# Default OAuth dir
-RUN mkdir -p /home/knight/.claude && chown knight:knight /home/knight/.claude
+# Python packages dir (knight can pip install into PVC)
+RUN mkdir -p /home/knight/.local/lib/python3 && chown -R knight:knight /home/knight/.local
 
 USER knight
 
-ENV NODE_ENV=production
-ENV PORT=18789
-ENV WORKSPACE_DIR=/workspace
+# PATH includes knight's local bin (PVC) for custom tools
+ENV NODE_ENV=production \
+    PORT=18789 \
+    WORKSPACE_DIR=/workspace \
+    PATH="/home/knight/.local/bin:$PATH" \
+    PYTHONUSERBASE="/home/knight/.local"
 
 EXPOSE 18789
 

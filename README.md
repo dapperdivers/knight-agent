@@ -46,10 +46,46 @@ Unlike flat file injection, knight-light uses a structured 4-layer prompt system
 ### Key Differences from OpenClaw
 
 - **No browser sidecar** — knights don't need web browsing
-- **No session persistence** — stateless task execution (memory via workspace files)
+- **No nats-bridge sidecar** — native NATS client built in
 - **No channel routing** — NATS is the only interface
 - **OAuth or API key** — supports Max plan token reuse
-- **~400MB image** vs ~1.5-2GB for full OpenClaw
+- **Rich toolbox** — jq, yq, kubectl, gh, nats, python3, ripgrep pre-installed
+- **Self-extending** — knights can pip install, write scripts, create local skills
+
+### Pre-installed Tools
+
+| Tool | Purpose |
+|------|---------|
+| `jq`, `yq` | JSON/YAML processing |
+| `curl`, `wget` | HTTP requests |
+| `git` | Version control |
+| `python3`, `pip` | Python scripts and packages |
+| `kubectl` | Kubernetes cluster queries (read-only) |
+| `gh` | GitHub CLI (issues, PRs, releases) |
+| `nats` | Direct NATS JetStream queries |
+| `rg` (ripgrep) | Fast code/text search (used by SDK Grep tool) |
+| `tree`, `less`, `file` | File exploration |
+| `dnsutils`, `netcat` | Network diagnostics |
+
+### Self-Extending
+
+Knights can install additional tools that persist across restarts (via PVC):
+
+```bash
+# Python packages
+pip install --user requests beautifulsoup4
+
+# Custom scripts (on PATH)
+cat > ~/.local/bin/my-tool.sh << 'EOF'
+#!/bin/bash
+# your tool here
+EOF
+chmod +x ~/.local/bin/my-tool.sh
+
+# Knight-authored skills
+mkdir -p /workspace/local-skills/my-skill
+# Write SKILL.md following agentskills.io spec
+```
 
 ## Configuration
 
