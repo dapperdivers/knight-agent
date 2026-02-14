@@ -18,6 +18,27 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          # Base image — ripgrep, nats, jq, curl, git, python3
+          - profile: base
+            suffix: ""
+            kubectl: "false"
+            gh: "false"
+            yq: "false"
+          # Cluster profile — adds kubectl
+          - profile: cluster
+            suffix: "-cluster"
+            kubectl: "true"
+            gh: "false"
+            yq: "true"
+          # DevOps profile — adds kubectl, gh, yq
+          - profile: devops
+            suffix: "-devops"
+            kubectl: "true"
+            gh: "true"
+            yq: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -39,21 +60,24 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=sha,prefix=
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,suffix=${{ matrix.suffix }}
+            type=sha,prefix=,suffix=${{ matrix.suffix }}
+            type=semver,pattern={{version}},suffix=${{ matrix.suffix }}
+            type=raw,value=latest${{ matrix.suffix }},enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Build and push (${{ matrix.profile }})
         uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}:buildcache,mode=max', env.REGISTRY, env.IMAGE_NAME) || '' }}
+          build-args: |
+            INSTALL_KUBECTL=${{ matrix.kubectl }}
+            INSTALL_GH=${{ matrix.gh }}
+            INSTALL_YQ=${{ matrix.yq }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache${{ matrix.suffix }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/{1}:buildcache{2},mode=max', env.REGISTRY, env.IMAGE_NAME, matrix.suffix) || '' }}
 
   lint:
     runs-on: ubuntu-latest
