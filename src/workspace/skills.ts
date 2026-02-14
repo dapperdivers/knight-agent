@@ -64,20 +64,31 @@ function parseFrontmatter(content: string): { meta: Record<string, string>; body
  */
 export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
   const skills: SkillMeta[] = [];
+  await scanDirectory(skillsDir, skills, 0);
+  return skills;
+}
+
+/**
+ * Recursively scan for skills up to a max depth.
+ * Stops descending into a directory if it contains a SKILL.md (it's a skill, not a category).
+ */
+async function scanDirectory(dir: string, skills: SkillMeta[], depth: number): Promise<void> {
+  if (depth > 5) return; // Safety: don't recurse forever
 
   try {
-    await access(skillsDir);
+    await access(dir);
   } catch {
-    return skills; // No skills directory
+    return;
   }
 
-  const entries = await readdir(skillsDir, { withFileTypes: true });
+  const entries = await readdir(dir, { withFileTypes: true });
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue; // Skip .git, .worktrees, etc.
 
-    const skillPath = join(skillsDir, entry.name);
-    const skillMdPath = join(skillPath, "SKILL.md");
+    const entryPath = join(dir, entry.name);
+    const skillMdPath = join(entryPath, "SKILL.md");
 
     try {
       await access(skillMdPath);
@@ -91,15 +102,15 @@ export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
           license: meta.license,
           compatibility: meta.compatibility,
           allowedTools: meta["allowed-tools"]?.split(" ").filter(Boolean),
-          path: skillPath,
+          path: entryPath,
         });
       }
+      // Don't recurse into skill directories
     } catch {
-      // Skip directories without valid SKILL.md
+      // No SKILL.md here — recurse deeper (it's a category directory)
+      await scanDirectory(entryPath, skills, depth + 1);
     }
   }
-
-  return skills;
 }
 
 /**
