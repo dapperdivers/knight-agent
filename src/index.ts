@@ -4,7 +4,22 @@ import { loadWorkspace, parseIdentity } from "./workspace/loader.js";
 import { createServer } from "./server.js";
 import { loadNatsConfig, startNatsSubscriber } from "./nats.js";
 
+/**
+ * Detect OAuth tokens in ANTHROPIC_API_KEY and move them to the correct env var.
+ * The Claude Agent SDK spawns Claude Code CLI, which sends ANTHROPIC_API_KEY as
+ * x-api-key header. OAuth tokens (sk-ant-oat01-*) need Bearer auth instead,
+ * which Claude Code handles via CLAUDE_CODE_OAUTH_TOKEN.
+ */
+function fixOAuthEnv(): void {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (key && key.startsWith("sk-ant-oat01-")) {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = key;
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+}
+
 async function main() {
+  fixOAuthEnv();
   const config = loadConfig();
   const logger = pino({
     level: config.logLevel,

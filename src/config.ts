@@ -24,8 +24,9 @@ export interface KnightConfig {
 
 export function loadConfig(): KnightConfig {
   const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+  const hasOAuthToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const claudeAuthDir = process.env.CLAUDE_AUTH_DIR ?? `${process.env.HOME}/.claude`;
-  const hasOAuth = !!process.env.CLAUDE_AUTH_DIR || existsSync(`${claudeAuthDir}/.credentials.json`);
+  const hasOAuth = hasOAuthToken || !!process.env.CLAUDE_AUTH_DIR || existsSync(`${claudeAuthDir}/.credentials.json`);
 
   return {
     workspaceDir: process.env.WORKSPACE_DIR ?? "/workspace",
