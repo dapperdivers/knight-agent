@@ -1,12 +1,5 @@
 # knight-agent — Lightweight AI agent runtime
-# Multi-stage build with optional tool profiles
-#
-# Build args:
-#   INSTALL_KUBECTL=false  - Kubernetes CLI (cluster ops knight only)
-#   INSTALL_GH=false       - GitHub CLI (devops knights)
-#   INSTALL_YQ=false       - YAML processor (config-heavy knights)
-#
-# Always included: ripgrep (SDK requirement), nats, jq, curl, git, python3
+# Single universal image for all knights
 
 # ---- Build stage (TypeScript compile) ----
 FROM node:22-slim AS build
@@ -24,50 +17,39 @@ RUN npm prune --production
 # ---- Tool installer (keeps runtime layer clean) ----
 FROM node:22-slim AS tools
 
-ARG INSTALL_KUBECTL=false
-ARG INSTALL_GH=false
-ARG INSTALL_YQ=false
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# ripgrep — REQUIRED (SDK's Grep tool depends on it)
+# ripgrep — required by SDK's Grep tool
 RUN curl -sL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
     | tar xz -C /tmp && mv /tmp/ripgrep-*/rg /usr/local/bin/rg
 
-# nats CLI — REQUIRED (fleet communication)
+# nats CLI — fleet communication
 RUN curl -sL https://github.com/nats-io/natscli/releases/download/v0.2.2/nats-0.2.2-linux-amd64.zip \
     -o /tmp/nats.zip && unzip /tmp/nats.zip -d /tmp/nats \
     && mv /tmp/nats/nats-0.2.2-linux-amd64/nats /usr/local/bin/nats && chmod +x /usr/local/bin/nats
 
-# kubectl — OPTIONAL (cluster ops)
-RUN if [ "$INSTALL_KUBECTL" = "true" ]; then \
-    curl -sLo /usr/local/bin/kubectl \
+# kubectl
+RUN curl -sLo /usr/local/bin/kubectl \
     "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-    && chmod +x /usr/local/bin/kubectl; \
-    else touch /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl; fi
+    && chmod +x /usr/local/bin/kubectl
 
-# gh CLI — OPTIONAL (GitHub operations)
-RUN if [ "$INSTALL_GH" = "true" ]; then \
-    GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
+# gh CLI (dynamic version)
+RUN GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
     && curl -sL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
-    | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh; \
-    else touch /usr/local/bin/gh && chmod +x /usr/local/bin/gh; fi
+    | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh
 
-# yq — OPTIONAL (YAML processing)
-RUN if [ "$INSTALL_YQ" = "true" ]; then \
-    curl -sLo /usr/local/bin/yq \
+# yq
+RUN curl -sLo /usr/local/bin/yq \
     "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
-    && chmod +x /usr/local/bin/yq; \
-    else touch /usr/local/bin/yq && chmod +x /usr/local/bin/yq; fi
+    && chmod +x /usr/local/bin/yq
 
 # ---- Runtime stage ----
 FROM node:22-slim
 
-# Core system packages (all knights need these)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -88,7 +70,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tree \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy tools (some may be empty stubs if not installed)
 COPY --from=tools /usr/local/bin/rg /usr/local/bin/rg
 COPY --from=tools /usr/local/bin/nats /usr/local/bin/nats
 COPY --from=tools /usr/local/bin/kubectl /usr/local/bin/kubectl
@@ -101,20 +82,16 @@ RUN groupadd -r knight && useradd -r -g knight -m -d /home/knight -s /bin/bash k
 # Writable .claude directory for SDK session data + OAuth token refresh
 RUN mkdir -p /home/knight/.claude && chown -R knight:knight /home/knight
 
-# Knight's local bin — PVC-persistent, on PATH (runtime tool installs)
+# Knight's local bin — PVC-persistent, on PATH
 RUN mkdir -p /home/knight/.local/bin && chown -R knight:knight /home/knight/.local
 
 WORKDIR /app
 
-# Copy built app and production deps
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./
 
-# Create workspace mount point
 RUN mkdir -p /workspace && chown knight:knight /workspace
-
-# Python packages dir
 RUN mkdir -p /home/knight/.local/lib/python3 && chown -R knight:knight /home/knight/.local
 
 USER knight
