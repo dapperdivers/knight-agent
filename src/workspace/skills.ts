@@ -74,7 +74,9 @@ export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
   const entries = await readdir(skillsDir, { withFileTypes: true });
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    // Follow symlinks (skill-linker creates symlinks from arsenal repo)
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    if (entry.name.startsWith(".")) continue;
 
     const skillPath = join(skillsDir, entry.name);
     const skillMdPath = join(skillPath, "SKILL.md");
