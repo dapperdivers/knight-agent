@@ -31,7 +31,7 @@ export function loadConfig(): KnightConfig {
   return {
     workspaceDir: process.env.WORKSPACE_DIR ?? "/workspace",
     port: parseInt(process.env.PORT ?? "18789", 10),
-    model: process.env.MODEL ?? "claude-sonnet-4-5-20250514",
+    model: process.env.MODEL ?? "claude-sonnet-4-5-20250929",
     maxTokens: parseInt(process.env.MAX_TOKENS ?? "16384", 10),
     knightName: process.env.KNIGHT_NAME,
     logLevel: process.env.LOG_LEVEL ?? "info",
