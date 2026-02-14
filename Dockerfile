@@ -23,21 +23,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# All tools fetched dynamically — no hardcoded versions.
+# Renovate scheduled rebuilds ensure we pick up new releases.
+
 # ripgrep — required by SDK's Grep tool
-RUN curl -sL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
+RUN RG_VERSION=$(curl -sL https://api.github.com/repos/BurntSushi/ripgrep/releases/latest | grep '"tag_name"' | sed 's/.*"\(.*\)".*/\1/') \
+    && curl -sL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
     | tar xz -C /tmp && mv /tmp/ripgrep-*/rg /usr/local/bin/rg
 
 # nats CLI — fleet communication
-RUN curl -sL https://github.com/nats-io/natscli/releases/download/v0.2.2/nats-0.2.2-linux-amd64.zip \
+RUN NATS_VERSION=$(curl -sL https://api.github.com/repos/nats-io/natscli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
+    && curl -sL "https://github.com/nats-io/natscli/releases/download/v${NATS_VERSION}/nats-${NATS_VERSION}-linux-amd64.zip" \
     -o /tmp/nats.zip && unzip /tmp/nats.zip -d /tmp/nats \
-    && mv /tmp/nats/nats-0.2.2-linux-amd64/nats /usr/local/bin/nats && chmod +x /usr/local/bin/nats
+    && mv /tmp/nats/nats-${NATS_VERSION}-linux-amd64/nats /usr/local/bin/nats && chmod +x /usr/local/bin/nats
 
 # kubectl
 RUN curl -sLo /usr/local/bin/kubectl \
     "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-# gh CLI (dynamic version)
+# gh CLI
 RUN GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
     && curl -sL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
     | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh
