@@ -173,3 +173,4 @@ Returns knight identity and status.
 ## License
 
 MIT
+
