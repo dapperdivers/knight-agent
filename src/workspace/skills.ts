@@ -84,7 +84,8 @@ async function scanDirectory(dir: string, skills: SkillMeta[], depth: number): P
   const entries = await readdir(dir, { withFileTypes: true });
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    // Follow symlinks (git-sync creates worktree symlinks)
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     if (entry.name.startsWith(".")) continue; // Skip .git, .worktrees, etc.
 
     const entryPath = join(dir, entry.name);
