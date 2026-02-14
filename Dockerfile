@@ -28,7 +28,8 @@ RUN curl -sLo /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl
 
 # gh CLI (GitHub queries)
-RUN curl -sL https://github.com/cli/cli/releases/latest/download/gh_2.67.0_linux_amd64.tar.gz \
+RUN GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
+    && curl -sL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
     | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh
 
 # yq (YAML processor)
