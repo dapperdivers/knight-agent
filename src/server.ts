@@ -20,15 +20,14 @@ export function createServer(
   const identity = parseIdentity(workspace.identity);
   const knightName = config.knightName ?? identity.name;
 
-  // Track active tasks for health reporting
+  // Task stats
   let activeTasks = 0;
   let totalTasks = 0;
   let lastTaskTime: Date | null = null;
+  let totalCost = 0;
 
   /**
-   * POST /hooks/agent — Receive tasks from nats-bridge.
-   *
-   * Same contract as OpenClaw's webhook: accepts { message, metadata? }
+   * POST /hooks/agent — Receive tasks via HTTP webhook.
    * Returns 202 immediately, executes async.
    */
   app.post("/hooks/agent", async (req, res) => {
@@ -39,10 +38,14 @@ export function createServer(
       return;
     }
 
-    const taskId = body.metadata?.taskId ?? `task-${Date.now()}`;
-    logger.info({ taskId, domain: body.metadata?.domain }, "Task received");
+    if (activeTasks >= config.maxConcurrentTasks) {
+      res.status(503).json({ error: "Too many active tasks", activeTasks });
+      return;
+    }
 
-    // Return 202 immediately — task runs async
+    const taskId = body.metadata?.taskId ?? `task-${Date.now()}`;
+    logger.info({ taskId, domain: body.metadata?.domain }, "Task received via HTTP");
+
     res.status(202).json({
       accepted: true,
       taskId,
@@ -53,10 +56,9 @@ export function createServer(
     activeTasks++;
     totalTasks++;
     try {
-      // Reload workspace files (picks up memory changes)
       workspace = await loadWorkspace(config);
-
-      await executeTask(body, config, workspace, logger);
+      const result = await executeTask(body, config, workspace, logger);
+      totalCost += result.cost ?? 0;
     } catch (error) {
       logger.error(
         { taskId, error: error instanceof Error ? error.message : String(error) },
@@ -68,39 +70,35 @@ export function createServer(
     }
   });
 
-  /**
-   * GET /healthz — Liveness probe.
-   */
+  /** GET /healthz — Liveness probe */
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok", knight: knightName });
   });
 
-  /**
-   * GET /readyz — Readiness probe.
-   */
+  /** GET /readyz — Readiness probe */
   app.get("/readyz", (_req, res) => {
-    if (activeTasks > 3) {
+    if (activeTasks >= config.maxConcurrentTasks) {
       res.status(503).json({ status: "busy", activeTasks });
       return;
     }
     res.status(200).json({ status: "ready", activeTasks });
   });
 
-  /**
-   * GET /info — Knight identity and status.
-   */
+  /** GET /info — Knight identity and status */
   app.get("/info", (_req, res) => {
     res.json({
       knight: knightName,
       emoji: identity.emoji,
       description: identity.description,
-      model: config.model,
+      model: config.model ?? "(sdk-default)",
       auth: config.authMethod,
       workspace: config.workspaceDir,
       stats: {
         activeTasks,
         totalTasks,
+        totalCost: Math.round(totalCost * 10000) / 10000,
         lastTaskTime: lastTaskTime?.toISOString() ?? null,
+        uptime: Math.floor(process.uptime()),
       },
     });
   });

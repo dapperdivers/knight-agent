@@ -6,30 +6,41 @@ import { loadNatsConfig, startNatsSubscriber } from "./nats.js";
 
 /**
  * Detect OAuth tokens in ANTHROPIC_API_KEY and move them to the correct env var.
+ *
  * The Claude Agent SDK spawns Claude Code CLI, which sends ANTHROPIC_API_KEY as
- * x-api-key header. OAuth tokens (sk-ant-oat01-*) need Bearer auth instead,
- * which Claude Code handles via CLAUDE_CODE_OAUTH_TOKEN.
+ * the x-api-key header. OAuth tokens (sk-ant-oat01-*) require Bearer auth,
+ * handled via CLAUDE_CODE_OAUTH_TOKEN env var.
+ *
+ * This runs BEFORE anything else touches the env.
  */
-function fixOAuthEnv(): void {
+function fixOAuthEnv(): "oauth" | "api-key" | "none" {
   const key = process.env.ANTHROPIC_API_KEY;
   if (key && key.startsWith("sk-ant-oat01-")) {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = key;
     delete process.env.ANTHROPIC_API_KEY;
+    return "oauth";
   }
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "oauth";
+  if (key) return "api-key";
+  return "none";
 }
 
 async function main() {
-  fixOAuthEnv();
+  const authSource = fixOAuthEnv();
   const config = loadConfig();
-  const logger = pino({
-    level: config.logLevel,
-    transport:
-      process.env.NODE_ENV !== "production"
-        ? { target: "pino-pretty" }
-        : undefined,
-  });
 
-  logger.info({ workspace: config.workspaceDir, model: config.model }, "Knight Agent starting");
+  const logger = pino({ level: config.logLevel });
+
+  logger.info(
+    {
+      workspace: config.workspaceDir,
+      model: config.model ?? "(sdk-default)",
+      auth: authSource,
+      taskTimeoutMs: config.taskTimeoutMs,
+      maxConcurrentTasks: config.maxConcurrentTasks,
+    },
+    "Knight Agent starting",
+  );
 
   // Load workspace files
   const workspace = await loadWorkspace(config);
@@ -40,7 +51,6 @@ async function main() {
     {
       knight: knightName,
       emoji: identity.emoji,
-      auth: config.authMethod,
       hasSoul: !!workspace.soul,
       hasAgents: !!workspace.agents,
       hasTools: !!workspace.tools,
@@ -53,10 +63,7 @@ async function main() {
   // Start HTTP server (health checks + optional webhook fallback)
   const app = createServer(config, workspace, logger);
   app.listen(config.port, () => {
-    logger.info(
-      { port: config.port, knight: knightName },
-      `HTTP server ready (health checks)`,
-    );
+    logger.info({ port: config.port, knight: knightName }, "HTTP server ready");
   });
 
   // Start NATS subscriber if configured

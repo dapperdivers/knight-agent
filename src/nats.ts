@@ -3,7 +3,6 @@ import {
   type NatsConnection,
   type JetStreamClient,
   type JetStreamManager,
-  type ConsumerInfo,
   StringCodec,
   AckPolicy,
   DeliverPolicy,
@@ -44,20 +43,35 @@ export function loadNatsConfig(): NatsConfig {
 
 /**
  * Parse a NATS task message into a TaskRequest.
- * Supports both plain text and JSON payloads.
+ *
+ * Supports multiple formats:
+ *   - JSON with top-level fields: { task, taskId, domain, ... }
+ *   - JSON with nested metadata: { task, metadata: { taskId, domain, ... } }
+ *   - Plain text (uses subject for metadata)
  */
 function parseTaskMessage(data: string, subject: string): TaskRequest {
   try {
     const parsed = JSON.parse(data);
+
+    // Extract task/message content
+    const message = parsed.message ?? parsed.task ?? data;
+
+    // Extract metadata — check both top-level and nested metadata object
+    const meta = parsed.metadata ?? {};
+    const taskId =
+      parsed.taskId ?? parsed.task_id ?? meta.taskId ?? meta.task_id ?? subjectTail(subject);
+    const domain =
+      parsed.domain ?? meta.domain ?? subjectDomain(subject);
+
     return {
-      message: parsed.message ?? parsed.task ?? data,
+      message,
       metadata: {
-        taskId: parsed.taskId ?? parsed.task_id ?? subject.split(".").pop(),
-        domain: parsed.domain ?? subject.split(".")[2],
-        replySubject: parsed.replySubject ?? parsed.reply_subject,
-        knight: parsed.knight,
-        skill: parsed.skill,
-        skillContent: parsed.skillContent,
+        taskId,
+        domain,
+        replySubject: parsed.replySubject ?? parsed.reply_subject ?? meta.replySubject,
+        knight: parsed.knight ?? meta.knight,
+        skill: parsed.skill ?? meta.skill,
+        skillContent: parsed.skillContent ?? meta.skillContent,
       },
     };
   } catch {
@@ -65,11 +79,21 @@ function parseTaskMessage(data: string, subject: string): TaskRequest {
     return {
       message: data,
       metadata: {
-        taskId: subject.split(".").pop(),
-        domain: subject.split(".")[2],
+        taskId: subjectTail(subject),
+        domain: subjectDomain(subject),
       },
     };
   }
+}
+
+/** Extract the last segment of a NATS subject */
+function subjectTail(subject: string): string {
+  return subject.split(".").pop() ?? "unknown";
+}
+
+/** Extract the domain segment (3rd part) of a fleet subject */
+function subjectDomain(subject: string): string {
+  return subject.split(".")[2] ?? "general";
 }
 
 /**
@@ -78,20 +102,15 @@ function parseTaskMessage(data: string, subject: string): TaskRequest {
 export async function startNatsSubscriber(
   natsConfig: NatsConfig,
   knightConfig: KnightConfig,
-  workspace: WorkspaceFiles,
+  _workspace: WorkspaceFiles,
   logger: Logger,
 ): Promise<NatsConnection> {
-  const identity = parseIdentity(workspace.identity);
-  const knightName = knightConfig.knightName ?? identity.name;
-
-  logger.info(
-    { url: natsConfig.url, topics: natsConfig.subscribeTopics, knight: knightName },
-    "Connecting to NATS",
-  );
-
   const nc = await connect({
     servers: natsConfig.url,
     name: `knight-${natsConfig.agentId}`,
+    reconnect: true,
+    maxReconnectAttempts: -1, // infinite reconnect
+    reconnectTimeWait: 2000,
   });
 
   logger.info({ server: nc.getServer() }, "Connected to NATS");
@@ -101,13 +120,14 @@ export async function startNatsSubscriber(
 
   // Subscribe to each configured topic
   for (const topic of natsConfig.subscribeTopics) {
-    await subscribeToTopic(nc, js, jsm, topic, natsConfig, knightConfig, workspace, logger);
+    await subscribeToTopic(nc, js, jsm, topic, natsConfig, knightConfig, logger);
   }
 
   // Handle connection events
   (async () => {
     for await (const status of nc.status()) {
-      logger.info({ type: status.type, data: status.data }, "NATS status change");
+      const level = status.type === "reconnect" ? "warn" : "info";
+      logger[level]({ type: status.type, data: status.data }, "NATS status change");
     }
   })();
 
@@ -121,115 +141,52 @@ async function subscribeToTopic(
   topic: string,
   natsConfig: NatsConfig,
   knightConfig: KnightConfig,
-  workspace: WorkspaceFiles,
   logger: Logger,
 ): Promise<void> {
-  // Determine the stream name from the topic
   // fleet-a.tasks.security.> → fleet_a_tasks
   const streamName = `${natsConfig.fleetId.replace(/-/g, "_")}_tasks`;
-
-  // Create or get a durable consumer
   const durableName = natsConfig.durableName ?? `${natsConfig.agentId}-consumer`;
 
   try {
-    // Try to create consumer (idempotent if exists with same config)
     await jsm.consumers.add(streamName, {
       durable_name: durableName,
       filter_subject: topic,
       ack_policy: AckPolicy.Explicit,
       deliver_policy: DeliverPolicy.New,
       max_deliver: 3,
-      ack_wait: 120_000_000_000, // 120s in nanoseconds — tasks can take a while
+      ack_wait: (knightConfig.taskTimeoutMs + 30_000) * 1_000_000, // task timeout + 30s buffer, in nanoseconds
     });
     logger.info({ stream: streamName, consumer: durableName, topic }, "Consumer ready");
   } catch (error) {
-    // Consumer might already exist — that's fine
     logger.debug({ error: String(error) }, "Consumer create (may already exist)");
   }
 
-  // Pull-based consumer — fetch messages in a loop
   const consumer = await js.consumers.get(streamName, durableName);
-
   logger.info({ topic, consumer: durableName }, "Starting message processing loop");
 
-  // Process messages
+  // Track active tasks for concurrency control
+  let activeTasks = 0;
+
   (async () => {
     while (!nc.isClosed()) {
       try {
+        // Respect concurrency limit
+        if (activeTasks >= knightConfig.maxConcurrentTasks) {
+          await sleep(1000);
+          continue;
+        }
+
         const messages = await consumer.fetch({ max_messages: 1, expires: 30_000 });
 
         for await (const msg of messages) {
-          const data = sc.decode(msg.data);
-          const subject = msg.subject;
-
-          logger.info(
-            { subject, size: data.length, seq: msg.seq },
-            "Task received via NATS",
-          );
-
-          try {
-            // Reload workspace for fresh memory
-            const freshWorkspace = await loadWorkspace(knightConfig);
-            const task = parseTaskMessage(data, subject);
-
-            // Execute the task
-            const result = await executeTask(task, knightConfig, freshWorkspace, logger);
-
-            // Publish result back
-            const resultSubject =
-              task.metadata?.replySubject ??
-              `${natsConfig.fleetId}.results.${task.metadata?.taskId ?? "unknown"}`;
-
-            const resultPayload = JSON.stringify({
-              taskId: task.metadata?.taskId,
-              knight: natsConfig.agentId,
-              success: result.success,
-              output: result.output,
-              cost: result.cost,
-              tokens: result.tokens,
-              durationMs: result.durationMs,
+          activeTasks++;
+          // Process async so we can fetch next message if concurrency allows
+          processMessage(nc, msg, natsConfig, knightConfig, logger)
+            .finally(() => {
+              activeTasks--;
             });
-
-            nc.publish(resultSubject, sc.encode(resultPayload));
-            logger.info(
-              {
-                taskId: task.metadata?.taskId,
-                resultSubject,
-                success: result.success,
-                durationMs: result.durationMs,
-              },
-              "Result published to NATS",
-            );
-
-            msg.ack();
-          } catch (error) {
-            const errMsg = error instanceof Error ? error.message : String(error);
-            logger.error({ subject, error: errMsg }, "Task execution failed");
-
-            // Publish error result
-            const task = parseTaskMessage(data, subject);
-            const resultSubject =
-              task.metadata?.replySubject ??
-              `${natsConfig.fleetId}.results.${task.metadata?.taskId ?? "unknown"}`;
-
-            nc.publish(
-              resultSubject,
-              sc.encode(
-                JSON.stringify({
-                  taskId: task.metadata?.taskId,
-                  knight: natsConfig.agentId,
-                  success: false,
-                  output: `Error: ${errMsg}`,
-                }),
-              ),
-            );
-
-            // NAK for retry (with delay)
-            msg.nak(10_000); // 10s retry delay
-          }
         }
       } catch (error) {
-        // Fetch timeout or transient error — just retry
         if (!nc.isClosed()) {
           logger.debug({ error: String(error) }, "Fetch cycle (retrying)");
         }
@@ -238,13 +195,82 @@ async function subscribeToTopic(
   })();
 }
 
-/**
- * Publish a message to NATS (for ad-hoc publishing outside task flow).
- */
-export async function publishToNats(
+async function processMessage(
   nc: NatsConnection,
-  subject: string,
-  data: string,
+  msg: { data: Uint8Array; subject: string; seq: number; ack: () => void; nak: (delay?: number) => void },
+  natsConfig: NatsConfig,
+  knightConfig: KnightConfig,
+  logger: Logger,
 ): Promise<void> {
-  nc.publish(subject, sc.encode(data));
+  const data = sc.decode(msg.data);
+  const subject = msg.subject;
+
+  logger.info({ subject, size: data.length, seq: msg.seq }, "Task received via NATS");
+
+  try {
+    // Reload workspace for fresh memory each task
+    const freshWorkspace = await loadWorkspace(knightConfig);
+    const task = parseTaskMessage(data, subject);
+
+    const result = await executeTask(task, knightConfig, freshWorkspace, logger);
+
+    // Publish result
+    const resultSubject =
+      task.metadata?.replySubject ??
+      `${natsConfig.fleetId}.results.${task.metadata?.taskId ?? "unknown"}`;
+
+    const resultPayload = JSON.stringify({
+      taskId: task.metadata?.taskId,
+      knight: natsConfig.agentId,
+      success: result.success,
+      output: result.output,
+      error: result.error,
+      cost: result.cost,
+      tokens: result.tokens,
+      durationMs: result.durationMs,
+      model: result.model,
+    });
+
+    nc.publish(resultSubject, sc.encode(resultPayload));
+    logger.info(
+      {
+        taskId: task.metadata?.taskId,
+        resultSubject,
+        success: result.success,
+        durationMs: result.durationMs,
+      },
+      "Result published to NATS",
+    );
+
+    msg.ack();
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error({ subject, error: errMsg }, "Task processing failed");
+
+    // Publish error result so the caller isn't left hanging
+    const task = parseTaskMessage(data, subject);
+    const resultSubject =
+      task.metadata?.replySubject ??
+      `${natsConfig.fleetId}.results.${task.metadata?.taskId ?? "unknown"}`;
+
+    nc.publish(
+      resultSubject,
+      sc.encode(
+        JSON.stringify({
+          taskId: task.metadata?.taskId,
+          knight: natsConfig.agentId,
+          success: false,
+          error: errMsg,
+          output: "",
+        }),
+      ),
+    );
+
+    // NAK for retry with delay
+    msg.nak(10_000);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

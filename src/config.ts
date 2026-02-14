@@ -8,8 +8,8 @@ export interface KnightConfig {
   workspaceDir: string;
   /** HTTP server port */
   port: number;
-  /** Default model for agent tasks */
-  model: string;
+  /** Default model for agent tasks (undefined = SDK default) */
+  model?: string;
   /** Max output tokens */
   maxTokens: number;
   /** Knight name override (read from IDENTITY.md if not set) */
@@ -20,22 +20,34 @@ export interface KnightConfig {
   authMethod: "api-key" | "oauth";
   /** Path to OAuth credential directory */
   claudeAuthDir: string;
+  /** Task timeout in milliseconds */
+  taskTimeoutMs: number;
+  /** Max concurrent tasks */
+  maxConcurrentTasks: number;
 }
 
 export function loadConfig(): KnightConfig {
   const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
   const hasOAuthToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const claudeAuthDir = process.env.CLAUDE_AUTH_DIR ?? `${process.env.HOME}/.claude`;
-  const hasOAuth = hasOAuthToken || !!process.env.CLAUDE_AUTH_DIR || existsSync(`${claudeAuthDir}/.credentials.json`);
+  const hasOAuth =
+    hasOAuthToken ||
+    !!process.env.CLAUDE_AUTH_DIR ||
+    existsSync(`${claudeAuthDir}/.credentials.json`);
+
+  // MODEL env var is optional — omitting it lets the SDK use its own default
+  const model = process.env.MODEL || undefined;
 
   return {
     workspaceDir: process.env.WORKSPACE_DIR ?? "/workspace",
     port: parseInt(process.env.PORT ?? "18789", 10),
-    model: process.env.MODEL ?? "claude-sonnet-4-5-20250929",
+    model,
     maxTokens: parseInt(process.env.MAX_TOKENS ?? "16384", 10),
     knightName: process.env.KNIGHT_NAME,
     logLevel: process.env.LOG_LEVEL ?? "info",
-    authMethod: hasApiKey ? "api-key" : "oauth",
+    authMethod: hasApiKey ? "api-key" : hasOAuth ? "oauth" : "api-key",
     claudeAuthDir,
+    taskTimeoutMs: parseInt(process.env.TASK_TIMEOUT_MS ?? "120000", 10),
+    maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS ?? "1", 10),
   };
 }

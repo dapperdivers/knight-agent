@@ -9,7 +9,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
-ARG CACHE_BUST=1
 COPY tsconfig.json ./
 COPY src/ ./src/
 RUN npm run build
@@ -21,30 +20,31 @@ FROM node:22-slim AS tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# kubectl (read-only cluster access)
+# kubectl
 RUN curl -sLo /usr/local/bin/kubectl \
     "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-# gh CLI (GitHub queries)
+# gh CLI (dynamic version)
 RUN GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/') \
     && curl -sL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
     | tar xz -C /tmp && mv /tmp/gh_*/bin/gh /usr/local/bin/gh
 
-# yq (YAML processor)
+# yq
 RUN curl -sLo /usr/local/bin/yq \
     "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
     && chmod +x /usr/local/bin/yq
 
-# ripgrep (used by SDK's Grep tool)
+# ripgrep (required by SDK's Grep tool)
 RUN curl -sL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
     | tar xz -C /tmp && mv /tmp/ripgrep-*/rg /usr/local/bin/rg
 
-# nats CLI (direct NATS queries from skills)
+# nats CLI
 RUN curl -sL https://github.com/nats-io/natscli/releases/download/v0.2.2/nats-0.2.2-linux-amd64.zip \
-    -o /tmp/nats.zip && apt-get update && apt-get install -y unzip && unzip /tmp/nats.zip -d /tmp/nats \
+    -o /tmp/nats.zip && unzip /tmp/nats.zip -d /tmp/nats \
     && mv /tmp/nats/nats-0.2.2-linux-amd64/nats /usr/local/bin/nats && chmod +x /usr/local/bin/nats
 
 # ---- Runtime stage ----
@@ -52,42 +52,41 @@ FROM node:22-slim
 
 # System packages knights commonly need
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Core utilities
     ca-certificates \
     curl \
     wget \
     git \
     jq \
-    # Text processing
     sed \
     gawk \
     grep \
-    # Python (many skills use it)
     python3 \
     python3-pip \
     python3-venv \
-    # Network tools
     dnsutils \
     netcat-openbsd \
-    # Misc
     unzip \
     file \
     less \
     tree \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built tools from tool installer
+# Copy pre-built tools
 COPY --from=tools /usr/local/bin/kubectl /usr/local/bin/kubectl
 COPY --from=tools /usr/local/bin/gh /usr/local/bin/gh
 COPY --from=tools /usr/local/bin/yq /usr/local/bin/yq
 COPY --from=tools /usr/local/bin/rg /usr/local/bin/rg
 COPY --from=tools /usr/local/bin/nats /usr/local/bin/nats
 
-# Create knight user
+# Create knight user with writable home
 RUN groupadd -r knight && useradd -r -g knight -m -d /home/knight -s /bin/bash knight
 
+# Writable .claude directory for SDK session data + OAuth token refresh
+# This should be backed by an emptyDir or PVC in K8s for persistence
+RUN mkdir -p /home/knight/.claude && chown -R knight:knight /home/knight
+
 # Knight's local bin — PVC-persistent, on PATH
-RUN mkdir -p /home/knight/.local/bin && chown -R knight:knight /home/knight
+RUN mkdir -p /home/knight/.local/bin && chown -R knight:knight /home/knight/.local
 
 WORKDIR /app
 
@@ -99,12 +98,11 @@ COPY --from=build /app/package.json ./
 # Create workspace mount point
 RUN mkdir -p /workspace && chown knight:knight /workspace
 
-# Python packages dir (knight can pip install into PVC)
+# Python packages dir
 RUN mkdir -p /home/knight/.local/lib/python3 && chown -R knight:knight /home/knight/.local
 
 USER knight
 
-# PATH includes knight's local bin (PVC) for custom tools
 ENV NODE_ENV=production \
     PORT=18789 \
     WORKSPACE_DIR=/workspace \

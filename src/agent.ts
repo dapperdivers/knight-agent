@@ -27,10 +27,12 @@ export interface TaskRequest {
 export interface TaskResult {
   success: boolean;
   output: string;
+  error?: string;
   taskId?: string;
   cost?: number;
   tokens?: { input: number; output: number };
   durationMs: number;
+  model?: string;
 }
 
 /**
@@ -46,6 +48,7 @@ export async function executeTask(
   const identity = parseIdentity(workspace.identity);
   const knightName = config.knightName ?? identity.name;
   const domain = task.metadata?.domain ?? "general";
+  const taskId = task.metadata?.taskId ?? "unknown";
 
   // Discover available skills from both git-synced and knight-authored locations
   const [sharedSkills, localSkills] = await Promise.all([
@@ -71,7 +74,7 @@ export async function executeTask(
     skills,
   );
 
-  // Layer 2: Context messages (prefilled conversation)
+  // Layer 2: Context messages (soul, tools, memory)
   const contextMessages = buildContextMessages(workspace, {
     ...identity,
     name: knightName,
@@ -86,36 +89,38 @@ export async function executeTask(
   // Layer 4: Task message
   const taskMessage = buildTaskMessage(task.message, task.metadata);
 
-  // Build the full prompt — context + skill + task as a single prompt string
-  // The SDK handles this as the user message; system prompt is separate
+  // Build the full prompt — context + skill + task as structured blocks
+  // The SDK only accepts a single prompt string, so we serialize the
+  // context messages as XML-tagged blocks to preserve structure.
   const promptParts: string[] = [];
 
-  // Inject context as structured blocks in the prompt
   for (const msg of contextMessages) {
-    promptParts.push(msg.content);
+    const tag = msg.role === "assistant" ? "context_ack" : "context";
+    promptParts.push(`<${tag}>\n${msg.content}\n</${tag}>`);
   }
   if (skillMsg) {
     promptParts.push(skillMsg.content);
   }
   promptParts.push(taskMessage);
 
-  const fullPrompt = promptParts.join("\n\n---\n\n");
+  const fullPrompt = promptParts.join("\n\n");
 
   logger.info(
     {
-      taskId: task.metadata?.taskId,
+      taskId,
       domain,
       knightName,
       skillsAvailable: skills.length,
       skillActivated: task.metadata?.skill ?? null,
+      model: config.model ?? "(sdk-default)",
       promptLength: fullPrompt.length,
     },
-    "Executing task with layered prompt",
+    "Executing task",
   );
 
+  // Build SDK options
   const options: Options = {
     systemPrompt,
-    model: config.model,
     cwd: config.workspaceDir,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
@@ -124,63 +129,166 @@ export async function executeTask(
     tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
   };
 
+  // Only set model if explicitly configured — otherwise SDK uses its own default
+  if (config.model) {
+    options.model = config.model;
+  }
+
+  // Task timeout via AbortController
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    abortController.abort();
+  }, config.taskTimeoutMs);
+  options.abortController = abortController;
+
   let output = "";
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let sdkModel: string | undefined;
+  let sdkError: string | undefined;
+  let isError = false;
 
   try {
     for await (const message of query({ prompt: fullPrompt, options })) {
-      if (message.type === "assistant") {
-        // Extract text from assistant message content blocks
-        for (const block of message.message.content) {
-          if (block.type === "text") {
-            output += block.text;
-          }
-        }
-      }
-
-      if (message.type === "result") {
-        if (message.subtype === "success") {
-          totalCost = message.total_cost_usd;
-          output = message.result || output;
-          for (const [, usage] of Object.entries(message.modelUsage)) {
-            totalInputTokens += usage.inputTokens ?? 0;
-            totalOutputTokens += usage.outputTokens ?? 0;
-          }
-        }
-      }
+      handleSDKMessage(message, {
+        onInit: (model) => {
+          sdkModel = model;
+          logger.debug({ taskId, model }, "SDK session initialized");
+        },
+        onAssistant: (text) => {
+          output += text;
+        },
+        onResult: (result) => {
+          totalCost = result.cost;
+          totalInputTokens = result.inputTokens;
+          totalOutputTokens = result.outputTokens;
+          isError = result.isError;
+          if (result.output) output = result.output;
+          if (result.isError) sdkError = result.output;
+        },
+      });
     }
 
+    clearTimeout(timeoutHandle);
     const durationMs = Date.now() - start;
-    logger.info(
-      {
-        taskId: task.metadata?.taskId,
-        durationMs,
+
+    if (isError) {
+      logger.warn(
+        { taskId, durationMs, cost: totalCost, error: sdkError, model: sdkModel },
+        "Task completed with SDK error",
+      );
+      return {
+        success: false,
+        output: "",
+        error: sdkError ?? "Unknown SDK error",
+        taskId,
         cost: totalCost,
         tokens: { input: totalInputTokens, output: totalOutputTokens },
-      },
+        durationMs,
+        model: sdkModel,
+      };
+    }
+
+    logger.info(
+      { taskId, durationMs, cost: totalCost, tokens: { input: totalInputTokens, output: totalOutputTokens }, model: sdkModel },
       "Task completed",
     );
 
     return {
       success: true,
       output,
-      taskId: task.metadata?.taskId,
+      taskId,
       cost: totalCost,
       tokens: { input: totalInputTokens, output: totalOutputTokens },
       durationMs,
+      model: sdkModel,
     };
   } catch (error) {
+    clearTimeout(timeoutHandle);
     const durationMs = Date.now() - start;
     const errMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ taskId: task.metadata?.taskId, error: errMsg, durationMs }, "Task failed");
+
+    // Distinguish timeout from other errors
+    const isTimeout = abortController.signal.aborted;
+    const errorType = isTimeout ? "timeout" : "execution_error";
+
+    logger.error(
+      { taskId, errorType, error: errMsg, durationMs, sdkError, model: sdkModel },
+      isTimeout ? "Task timed out" : "Task failed",
+    );
+
+    // If SDK returned an error message before crashing, include it
+    const detailedError = sdkError
+      ? `${errMsg} — SDK detail: ${sdkError}`
+      : errMsg;
 
     return {
       success: false,
-      output: `Error: ${errMsg}`,
-      taskId: task.metadata?.taskId,
+      output: "",
+      error: detailedError,
+      taskId,
+      cost: totalCost,
+      tokens: { input: totalInputTokens, output: totalOutputTokens },
       durationMs,
+      model: sdkModel,
     };
+  }
+}
+
+/**
+ * Structured SDK message handler — extracts relevant data from each message type.
+ */
+interface SDKCallbacks {
+  onInit?: (model: string) => void;
+  onAssistant?: (text: string) => void;
+  onResult?: (result: {
+    output: string;
+    cost: number;
+    inputTokens: number;
+    outputTokens: number;
+    isError: boolean;
+  }) => void;
+}
+
+function handleSDKMessage(message: SDKMessage, callbacks: SDKCallbacks): void {
+  switch (message.type) {
+    case "system":
+      if (message.subtype === "init" && callbacks.onInit) {
+        callbacks.onInit((message as Record<string, unknown>).model as string ?? "unknown");
+      }
+      break;
+
+    case "assistant":
+      if (callbacks.onAssistant) {
+        for (const block of message.message.content) {
+          if (block.type === "text") {
+            callbacks.onAssistant(block.text);
+          }
+        }
+      }
+      break;
+
+    case "result":
+      if (message.subtype === "success" && callbacks.onResult) {
+        let inputTokens = 0;
+        let outputTokens = 0;
+        if ("modelUsage" in message) {
+          for (const [, usage] of Object.entries(
+            message.modelUsage as Record<string, { inputTokens?: number; outputTokens?: number }>,
+          )) {
+            inputTokens += usage.inputTokens ?? 0;
+            outputTokens += usage.outputTokens ?? 0;
+          }
+        }
+        callbacks.onResult({
+          output: message.result || "",
+          cost: message.total_cost_usd,
+          inputTokens,
+          outputTokens,
+          isError: !!(message as Record<string, unknown>).is_error,
+        });
+      }
+      break;
   }
 }
