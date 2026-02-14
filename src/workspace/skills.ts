@@ -1,15 +1,15 @@
-import { readFile, readdir, access } from "fs/promises";
+import { readFile, readdir, access, stat } from "fs/promises";
 import { join } from "path";
 
 /**
  * Agent Skills loader — discovers skills following the agentskills.io spec.
  *
- * Skills are folders containing a SKILL.md with YAML frontmatter:
- *   ---
- *   name: skill-name
- *   description: What this skill does and when to use it.
- *   ---
- *   [Markdown instructions]
+ * Recursively walks skill directories to find SKILL.md files at any depth.
+ * Handles symlinks (git-sync worktrees), nested categories, and dotfiles.
+ *
+ * Supports KNIGHT_SKILLS env var for per-knight skill filtering:
+ *   KNIGHT_SKILLS="shared security" → only loads skills under shared/ and security/ categories
+ *   If unset, loads ALL discovered skills.
  *
  * Progressive disclosure:
  * - At startup: only name + description loaded (~100 tokens per skill)
@@ -24,6 +24,8 @@ export interface SkillMeta {
   allowedTools?: string[];
   /** Path to the skill directory */
   path: string;
+  /** Category path (e.g., "shared", "security/opencti-intel") */
+  category?: string;
 }
 
 export interface SkillFull extends SkillMeta {
@@ -59,8 +61,12 @@ function parseFrontmatter(content: string): { meta: Record<string, string>; body
 }
 
 /**
- * Discover all skills in the skills directory.
- * Returns lightweight metadata only (progressive disclosure layer 1).
+ * Discover all skills by recursively walking the directory tree.
+ * Follows symlinks, skips dotfiles/dirs, stops recursing into skill dirs.
+ *
+ * If KNIGHT_SKILLS env var is set (space-separated category names),
+ * only skills whose path includes a matching category are returned.
+ * The "shared" category is always included if KNIGHT_SKILLS is set.
  */
 export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
   const skills: SkillMeta[] = [];
@@ -68,40 +74,93 @@ export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
   try {
     await access(skillsDir);
   } catch {
-    return skills; // No skills directory
+    return skills;
   }
 
-  const entries = await readdir(skillsDir, { withFileTypes: true });
+  await walkForSkills(skillsDir, skillsDir, skills, 0);
+
+  // Apply KNIGHT_SKILLS filter if set
+  const knightSkills = process.env.KNIGHT_SKILLS?.trim();
+  if (knightSkills) {
+    const allowed = new Set(knightSkills.split(/\s+/));
+    // Always include "shared"
+    allowed.add("shared");
+
+    return skills.filter((skill) => {
+      // Check if the skill path contains any allowed category
+      const relPath = skill.path.slice(skillsDir.length + 1);
+      return [...allowed].some((cat) => relPath.includes(`/${cat}/`) || relPath.startsWith(`${cat}/`));
+    });
+  }
+
+  return skills;
+}
+
+/**
+ * Recursively walk directories looking for SKILL.md files.
+ * Max depth 8 handles: git-sync worktree → repo → category → skill (4 levels typical).
+ */
+async function walkForSkills(
+  rootDir: string,
+  dir: string,
+  skills: SkillMeta[],
+  depth: number,
+): Promise<void> {
+  if (depth > 8) return;
+
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
 
   for (const entry of entries) {
-    // Follow symlinks (skill-linker creates symlinks from arsenal repo)
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    // Skip dotfiles/dirs (.git, .worktrees, .github, etc.)
     if (entry.name.startsWith(".")) continue;
 
-    const skillPath = join(skillsDir, entry.name);
-    const skillMdPath = join(skillPath, "SKILL.md");
+    const entryPath = join(dir, entry.name);
 
+    // Resolve symlinks to check if they point to directories
+    let isDir = entry.isDirectory();
+    if (!isDir && entry.isSymbolicLink()) {
+      try {
+        const stats = await stat(entryPath); // stat follows symlinks
+        isDir = stats.isDirectory();
+      } catch {
+        continue; // Broken symlink
+      }
+    }
+
+    if (!isDir) continue;
+
+    // Check if this directory contains a SKILL.md
+    const skillMdPath = join(entryPath, "SKILL.md");
     try {
       await access(skillMdPath);
       const content = await readFile(skillMdPath, "utf-8");
       const { meta } = parseFrontmatter(content);
 
       if (meta.name && meta.description) {
+        // Derive category from relative path
+        const relPath = entryPath.slice(rootDir.length + 1);
+
         skills.push({
           name: meta.name,
           description: meta.description,
           license: meta.license,
           compatibility: meta.compatibility,
           allowedTools: meta["allowed-tools"]?.split(" ").filter(Boolean),
-          path: skillPath,
+          path: entryPath,
+          category: relPath,
         });
       }
+      // Don't recurse into skill directories — they're leaves
     } catch {
-      // Skip directories without valid SKILL.md
+      // No SKILL.md here — it's a category dir, recurse deeper
+      await walkForSkills(rootDir, entryPath, skills, depth + 1);
     }
   }
-
-  return skills;
 }
 
 /**
