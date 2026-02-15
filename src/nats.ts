@@ -153,8 +153,7 @@ async function subscribeToTopic(
       filter_subject: topic,
       ack_policy: AckPolicy.Explicit,
       deliver_policy: DeliverPolicy.New,
-      max_deliver: 3,
-      ack_wait: (knightConfig.taskTimeoutMs + 30_000) * 1_000_000, // task timeout + 30s buffer, in nanoseconds
+      max_deliver: 1, // immediate ack = no redelivery needed
     });
     logger.info({ stream: streamName, consumer: durableName, topic }, "Consumer ready");
   } catch (error) {
@@ -207,6 +206,11 @@ async function processMessage(
 
   logger.info({ subject, size: data.length, seq: msg.seq }, "Task received via NATS");
 
+  // Ack immediately — we own this task now (at-most-once delivery).
+  // Results always publish to fleet_a_results regardless of success/failure,
+  // so the caller is never left hanging.
+  msg.ack();
+
   try {
     // Reload workspace for fresh memory each task
     const freshWorkspace = await loadWorkspace(knightConfig);
@@ -241,8 +245,6 @@ async function processMessage(
       },
       "Result published to NATS",
     );
-
-    msg.ack();
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     logger.error({ subject, error: errMsg }, "Task processing failed");
@@ -265,9 +267,6 @@ async function processMessage(
         }),
       ),
     );
-
-    // NAK for retry with delay
-    msg.nak(10_000);
   }
 }
 

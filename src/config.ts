@@ -53,7 +53,7 @@ export function loadConfig(): KnightConfig {
     logLevel: process.env.LOG_LEVEL ?? "info",
     authMethod: hasApiKey ? "api-key" : hasOAuth ? "oauth" : "api-key",
     claudeAuthDir,
-    taskTimeoutMs: parseInt(process.env.TASK_TIMEOUT_MS ?? "120000", 10),
+    taskTimeoutMs: parseInt(process.env.TASK_TIMEOUT_MS ?? "1800000", 10), // 30 minutes default
     maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS ?? "1", 10),
   };
 }
