@@ -6,6 +6,10 @@ import { existsSync } from "fs";
 export interface KnightConfig {
   /** Workspace directory containing SOUL.md, AGENTS.md, etc. */
   workspaceDir: string;
+  /** Directory containing baked-in default files (AGENTS.md, etc.) */
+  defaultsDir: string;
+  /** Vault mount path (Derek's Second Brain, optional) */
+  vaultPath: string;
   /** HTTP server port */
   port: number;
   /** Default model for agent tasks (undefined = SDK default) */
@@ -40,6 +44,8 @@ export function loadConfig(): KnightConfig {
 
   return {
     workspaceDir: process.env.WORKSPACE_DIR ?? "/workspace",
+    defaultsDir: process.env.DEFAULTS_DIR ?? "/app/defaults",
+    vaultPath: process.env.VAULT_PATH ?? "/vault",
     port: parseInt(process.env.PORT ?? "18789", 10),
     model,
     maxTokens: parseInt(process.env.MAX_TOKENS ?? "16384", 10),

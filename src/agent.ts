@@ -1,4 +1,5 @@
 import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync } from "fs";
 import { join } from "path";
 import type { KnightConfig } from "./config.js";
 import type { WorkspaceFiles } from "./workspace/loader.js";
@@ -67,11 +68,15 @@ export async function executeTask(
     }
   }
 
+  // Check if vault is mounted
+  const vaultAvailable = existsSync(config.vaultPath);
+
   // Layer 1: System prompt (with skill catalog for discovery)
   const systemPrompt = buildSystemPrompt(
     { ...identity, name: knightName },
     domain,
     skills,
+    { vaultAvailable },
   );
 
   // Layer 2: Context messages (soul, tools, memory)

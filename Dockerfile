@@ -96,6 +96,11 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./
 
+# Default workspace files baked into image
+# These provide the operational contract; personality (SOUL.md, IDENTITY.md)
+# is injected via ConfigMap at deploy time
+COPY defaults/ /app/defaults/
+
 RUN mkdir -p /workspace && chown knight:knight /workspace
 RUN mkdir -p /home/knight/.local/lib/python3 && chown -R knight:knight /home/knight/.local
 

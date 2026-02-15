@@ -21,8 +21,22 @@ export function buildSystemPrompt(
   identity: KnightIdentity,
   domain: string,
   skills: SkillMeta[] = [],
+  options?: { vaultAvailable?: boolean },
 ): string {
   const skillCatalog = buildSkillCatalog(skills);
+  const vaultAvailable = options?.vaultAvailable ?? false;
+
+  const vaultSection = vaultAvailable
+    ? `
+<vault>
+You have access to Derek's Obsidian vault (Second Brain) at /vault.
+- /vault/ — Read-only. Research, projects, personal context. Use for enrichment.
+- /vault/Briefings/ — Read-write. Save reports and briefings here.
+- /vault/Roundtable/ — Read-write. Save findings, research, and useful docs here.
+Write to the vault when you produce something Derek would find valuable long-term.
+Keep working notes and personal learnings in your local workspace (/workspace/).
+</vault>`
+    : "";
 
   return `You are ${identity.name} ${identity.emoji}, a specialized AI agent in the Knights of the Round Table.
 
@@ -37,6 +51,12 @@ export function buildSystemPrompt(
 - Keep responses focused and actionable.
 </constraints>
 
+<memory>
+- Read MEMORY.md at task start for accumulated wisdom.
+- After each task, log work to memory/YYYY-MM-DD.md and update MEMORY.md with learnings.
+- Files survive restarts. Your in-context memory does not. Write it down.
+</memory>
+
 <output_contract>
 When returning results, use structured formats:
 - For analysis: provide findings, severity, recommendations
@@ -44,7 +64,7 @@ When returning results, use structured formats:
 - For reports: use clear sections with headers
 Always include confidence level (high/medium/low) for analytical claims.
 </output_contract>
-${skillCatalog ? "\n" + skillCatalog : ""}`;
+${vaultSection}${skillCatalog ? "\n" + skillCatalog : ""}`;
 }
 
 /**
