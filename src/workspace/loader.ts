@@ -132,8 +132,8 @@ export async function loadWorkspace(config: KnightConfig): Promise<WorkspaceFile
     readWithFallback(join(dir, "SOUL.md"), join(configDir, "SOUL.md")),
     // Operational: PVC → ConfigMap → Image defaults
     readWithChain(join(dir, "AGENTS.md"), [join(configDir, "AGENTS.md"), join(defaultsDir, "AGENTS.md")]),
-    // Tools: PVC → ConfigMap (no image default — environment-specific)
-    readWithFallback(join(dir, "TOOLS.md"), join(configDir, "TOOLS.md")),
+    // Tools: PVC → ConfigMap → Image defaults (knight extends over time)
+    readWithChain(join(dir, "TOOLS.md"), [join(configDir, "TOOLS.md"), join(defaultsDir, "TOOLS.md")]),
     // Identity: PVC → ConfigMap (no image default — must be configured)
     readWithFallback(join(dir, "IDENTITY.md"), join(configDir, "IDENTITY.md")),
     // Memory: PVC only (knight-maintained)
